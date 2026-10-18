@@ -12,13 +12,13 @@ print("Kufijte e poshtem:", lower_bounds)
 print("Kufijte e siperm:", upper_bounds)
 
 # Vleresimi fillestar
-J1, J2, C1, C2 = udp.fitness(x)
+J1_fillestar, J2_fillestar, C1_fillestar, C2_fillestar = udp.fitness(x)
 
 print("\nRezultatet fillestare:")
-print("J1 =", J1)
-print("J2 =", J2)
-print("C1 =", C1)
-print("C2 =", C2)
+print("J1 =", J1_fillestar)
+print("J2 =", J2_fillestar)
+print("C1 =", C1_fillestar)
+print("C2 =", C2_fillestar)
 
 
 import random
@@ -27,7 +27,7 @@ import random
 print("\n--- TESTIMI I KONFIGURIMEVE TE REJA ---")
 
 random.seed(42)
-
+zgjidhjet = []
 for i in range(5):
     konfigurimi = []
 
@@ -44,6 +44,12 @@ for i in range(5):
         konfigurimi.append(vlera)
 
     J1, J2, C1, C2 = udp.fitness(konfigurimi)
+    if C1 <= 0 and C2 <= 0:
+            zgjidhjet.append({
+            "emri": f"Konfigurimi {i + 1}",
+            "J1": J1,
+            "J2": J2
+        })
 
     print(f"\nKonfigurimi {i + 1}")
     print(f"J1 = {J1:.4f}")
