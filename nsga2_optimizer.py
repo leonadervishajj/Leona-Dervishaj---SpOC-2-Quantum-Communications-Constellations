@@ -45,12 +45,33 @@ def vlereso_konfigurim(x):
 
 
 if __name__ == "__main__":
-    x = gjenero_konfigurim()
-    rezultati = vlereso_konfigurim(x)
+    MADHESIA_POPULLATES = 20
+    popullata = []
 
-    print("Konfigurimi:", x)
-    print("J1:", rezultati["J1"])
-    print("J2:", rezultati["J2"])
-    print("C1:", rezultati["C1"])
-    print("C2:", rezultati["C2"])
-    print("I vlefshem:", rezultati["valid"])
+    print("--- GJENERIMI I POPULLATES ---")
+
+    for i in range(MADHESIA_POPULLATES):
+        x = gjenero_konfigurim()
+        rezultati = vlereso_konfigurim(x)
+        popullata.append(rezultati)
+
+        print(
+            f"Konfigurimi {i + 1}: "
+            f"J1={rezultati['J1']:.4f}, "
+            f"J2={rezultati['J2']:.4f}, "
+            f"C1={rezultati['C1']:.2f}, "
+            f"C2={rezultati['C2']:.2f}, "
+            f"Valid={rezultati['valid']}"
+        )
+
+    te_vlefshme = [
+        z for z in popullata if z["valid"]
+    ]
+
+    print("\n--- PERMBLEDHJA ---")
+    print("Gjithsej konfigurime:", len(popullata))
+    print("Konfigurime te vlefshme:", len(te_vlefshme))
+    print(
+        "Konfigurime jo te vlefshme:",
+        len(popullata) - len(te_vlefshme)
+    )
