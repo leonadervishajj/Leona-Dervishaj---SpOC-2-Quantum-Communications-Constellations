@@ -107,4 +107,32 @@ for z in pareto:
         f"J2 = {z['J2']:.4f}"
     )
 
+# Vizualizimi i zgjidhjeve Pareto
+import matplotlib.pyplot as plt
+
+if pareto:
+    j1_values = [z["J1"] for z in pareto]
+    j2_values = [z["J2"] for z in pareto]
+
+    plt.figure(figsize=(8, 5))
+
+    plt.scatter(j1_values, j2_values, color="blue", s=80)
+
+    for z in pareto:
+        plt.annotate(
+            z["emri"],
+            (z["J1"], z["J2"]),
+            xytext=(5, 5),
+            textcoords="offset points"
+        )
+
+    plt.xlabel("J1 - Kostoja e komunikimit")
+    plt.ylabel("J2 - Kostoja e infrastruktures")
+    plt.title("Pareto Front - ESA SpOC 2")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Nuk ka zgjidhje te vlefshme per grafik.")
+
 
