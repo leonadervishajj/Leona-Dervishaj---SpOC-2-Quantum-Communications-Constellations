@@ -48,3 +48,47 @@ def crowding_distance(fronti):
                 )
 
     return distancat
+
+
+import random
+
+
+def binary_tournament_selection(popullata, ranks, distances, rng=None):
+    """
+    Zgjedh nje konfigurim per riprodhim duke perdorur
+    Pareto rank dhe Crowding Distance.
+
+    Rank me i vogel = konfigurim me i mire.
+    Distance me e madhe = diversitet me i larte.
+    """
+    if rng is None:
+        rng = random
+
+    if not popullata:
+        raise ValueError("Popullata nuk mund te jete bosh.")
+
+    if len(popullata) != len(ranks) or len(popullata) != len(distances):
+        raise ValueError("Rangs dhe distances duhet te perputhen me popullaten.")
+
+    if len(popullata) == 1:
+        return popullata[0]
+
+    # Zgjedhim dy konkurrente te ndryshem
+    a, b = rng.sample(range(len(popullata)), 2)
+
+    # Preferojme rank me te vogel
+    if ranks[a] < ranks[b]:
+        return popullata[a]
+
+    if ranks[b] < ranks[a]:
+        return popullata[b]
+
+    # Nese rank eshte i njejte, preferojme crowding distance
+    if distances[a] > distances[b]:
+        return popullata[a]
+
+    if distances[b] > distances[a]:
+        return popullata[b]
+
+    # Barazim i plote: zgjedhje e rastit
+    return popullata[rng.choice([a, b])]
