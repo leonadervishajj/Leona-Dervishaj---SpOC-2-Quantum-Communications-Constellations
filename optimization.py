@@ -61,4 +61,50 @@ for i in range(5):
         print("Konfigurimi eshte i vlefshem")
     else:
         print("Konfigurimi nuk eshte i vlefshem")
+        
+# Shtojme konfigurimin fillestar
+if C1_fillestar <= 0 and C2_fillestar <= 0:
+    zgjidhjet.append({
+        "emri": "Fillestar",
+        "J1": J1_fillestar,
+        "J2": J2_fillestar
+    })
+
+
+# Kontrollojme nese A dominon B
+def dominon(A, B):
+    return (
+        A["J1"] <= B["J1"]
+        and A["J2"] <= B["J2"]
+        and (
+            A["J1"] < B["J1"]
+            or A["J2"] < B["J2"]
+        )
+    )
+
+
+# Gjejme zgjidhjet jo te dominuara
+pareto = []
+
+for A in zgjidhjet:
+    dominohet = False
+
+    for B in zgjidhjet:
+        if dominon(B, A):
+            dominohet = True
+            break
+
+    if not dominohet:
+        pareto.append(A)
+
+
+print("\n--- ZGJIDHJET PARETO ---")
+
+for z in pareto:
+    print(
+        f"{z['emri']}: "
+        f"J1 = {z['J1']:.4f}, "
+        f"J2 = {z['J2']:.4f}"
+    )
+
 
