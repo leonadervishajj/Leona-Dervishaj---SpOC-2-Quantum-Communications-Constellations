@@ -1,7 +1,7 @@
 
 import random
 
-from constellation import udp
+from constellation import udp, combine_scores
 from src.selection import (
     crowding_distance,
     binary_tournament_selection
@@ -147,6 +147,28 @@ def select_next_population(combined, size):
     return survivors
 
 
+def population_hypervolume(population):
+    """
+    Llogarit Hypervolume per konfigurimet e vlefshme
+    duke perdorur funksionin zyrtar te ESA-s.
+    """
+    points = [
+        [z["J1"], z["J2"], z["C1"], z["C2"]]
+        for z in population
+        if z["valid"]
+    ]
+
+    if not points:
+        return 0.0, 0.0
+
+    esa_score = float(combine_scores(points))
+    hypervolume = -esa_score / 10000.0
+
+    return hypervolume, esa_score
+
+
+
+
 def run_nsga2(population_size=20, generations=5, seed=42):
     """Ekzekuton NSGA-II per konstelacionet e ESA-s."""
     if population_size < 2 or population_size % 2 != 0:
@@ -201,6 +223,7 @@ def run_nsga2(population_size=20, generations=5, seed=42):
         )
 
         feasible = [z for z in population if z["valid"]]
+        hypervolume, esa_score = population_hypervolume(population)
 
         record = {
             "generation": generation,
@@ -212,17 +235,22 @@ def run_nsga2(population_size=20, generations=5, seed=42):
             "best_J2": (
                 min(z["J2"] for z in feasible)
                 if feasible else None
-            )
+            ),
+            "hypervolume": hypervolume,
+            "esa_score": esa_score,
         }
         history.append(record)
+
 
         print(
             f"Generation {generation}/{generations} | "
             f"Feasible: {len(feasible)}/{population_size} | "
             f"Best J1: {record['best_J1']} | "
-            f"Best J2: {record['best_J2']}",
+            f"Best J2: {record['best_J2']} | "
+            f"HV: {hypervolume:.6f}",
             flush=True
         )
+
 
     return population, history
 
