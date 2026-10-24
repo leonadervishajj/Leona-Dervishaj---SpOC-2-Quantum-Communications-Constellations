@@ -1,5 +1,6 @@
 
 import csv
+import argparse
 from pathlib import Path
 
 from constellation import udp
@@ -7,10 +8,26 @@ from src.nsga2 import sort_fronts
 
 
 RESULTS_DIR = Path("results")
-CSV_PATH = RESULTS_DIR / "nsga2_final_population.csv"
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Compare NSGA-II results with the ESA baseline"
+    )
+
+    parser.add_argument(
+        "--run-dir",
+        default=str(RESULTS_DIR),
+        help="Folder containing nsga2_final_population.csv"
+    )
+
+    args = parser.parse_args(argv)
+
+    csv_path = Path(args.run_dir) / "nsga2_final_population.csv"
+
+    if not csv_path.is_file():
+        parser.error(f"CSV file not found: {csv_path}")
+
     # Konfigurimi fillestar zyrtar i ESA-s
     baseline_x = udp.example()
     baseline = udp.fitness(baseline_x)
@@ -30,7 +47,7 @@ def main():
     # Lexojme rezultatet finale te NSGA-II
     feasible = []
 
-    with open(CSV_PATH, newline="", encoding="utf-8") as file:
+    with open(csv_path, newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
 
         for row in reader:
