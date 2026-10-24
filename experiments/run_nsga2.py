@@ -17,8 +17,37 @@ def save_csv(path, rows, fieldnames):
         writer.writeheader()
         writer.writerows(rows)
 
+def prepare_output_dir(seed, population, generations, output_dir=None):
+    """Krijon folder per çdo run pa mbishkruar rezultatet."""
 
-def main():
+    def is_taken(path):
+        return path.exists() and (
+            not path.is_dir() or any(path.iterdir())
+        )
+
+    if output_dir is not None:
+        path = Path(output_dir)
+
+        if is_taken(path):
+            raise FileExistsError(
+                f"Folderi '{path}' ekziston dhe nuk eshte bosh."
+            )
+    else:
+        base = Path("results") / (
+            f"run_seed{seed}_pop{population}_gen{generations}"
+        )
+
+        path = base
+        counter = 2
+
+        while is_taken(path):
+            path = base.with_name(f"{base.name}_{counter}")
+            counter += 1
+
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description="ESA SpOC 2 - NSGA-II experiments"
     )
@@ -26,12 +55,29 @@ def main():
     parser.add_argument("--population", type=int, default=20)
     parser.add_argument("--generations", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
+    
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Folder i vecante per rezultatet e ketij ekzekutimi"
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    # Folderi ku do te ruhen rezultatet
-    results_dir = Path("results")
-    results_dir.mkdir(exist_ok=True)
+  
+    # Krijimi i folderit pa mbishkruar rezultatet
+    try:
+        results_dir = prepare_output_dir(
+            args.seed,
+            args.population,
+            args.generations,
+            args.output_dir
+        )
+    except FileExistsError as error:
+        parser.error(str(error))
+
+    print("Results folder:", results_dir.resolve(), flush=True)
+
 
     # Ekzekutimi i algoritmit NSGA-II
     population, history = run_nsga2(
@@ -40,12 +86,21 @@ def main():
         seed=args.seed
     )
 
+    
     # 1. Ruaj historine e gjeneratave
     save_csv(
         results_dir / "nsga2_history.csv",
         history,
-        ["generation", "feasible", "best_J1", "best_J2"]
+        [
+            "generation",
+            "feasible",
+            "best_J1",
+            "best_J2",
+            "hypervolume",
+            "esa_score"
+        ]
     )
+
 
     # 2. Ruaj popullaten finale me 20 parametrat
     final_rows = []
@@ -108,6 +163,32 @@ def main():
         dpi=200
     )
     plt.close()
+    
+    # 4. Grafiku i Hypervolume per çdo gjenerate
+    hypervolumes = [h["hypervolume"] for h in history]
+
+    plt.figure(figsize=(9, 5))
+
+    plt.plot(
+        generations,
+        hypervolumes,
+        marker="o",
+        label="Hypervolume"
+    )
+
+    plt.xlabel("Generation")
+    plt.ylabel("Hypervolume")
+    plt.title("NSGA-II Hypervolume per Generation")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    plt.savefig(
+        results_dir / "nsga2_hypervolume.png",
+        dpi=200
+    )
+    plt.close()
+
 
     # 4. Grafiku final Pareto
     feasible = [
@@ -148,7 +229,8 @@ def main():
 
     print("\n--- EXPERIMENT COMPLETED ---")
     print("Results saved in:", results_dir.resolve())
-
+    print(f"Final Hypervolume: {history[-1]['hypervolume']:.6f}")
+    print(f"Final ESA Score: {history[-1]['esa_score']:.6f}")
 
 if __name__ == "__main__":
     main()
