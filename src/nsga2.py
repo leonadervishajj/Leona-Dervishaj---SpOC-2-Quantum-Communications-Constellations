@@ -162,10 +162,9 @@ def population_hypervolume(population):
         return 0.0, 0.0
 
     esa_score = float(combine_scores(points))
-    hypervolume = -esa_score / 10000.0
+    hypervolume = max(0.0, -esa_score / 10000.0)
 
     return hypervolume, esa_score
-
 
 
 
