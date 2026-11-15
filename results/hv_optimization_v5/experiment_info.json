@@ -1,0 +1,7 @@
+{
+  "experiment": "HV Optimization V5",
+  "baseline_hv": 0.613118711,
+  "target_hv": 0.614984,
+  "baseline_submission": "submission/esa_submission_v4.json",
+  "status": "prepared"
+}
