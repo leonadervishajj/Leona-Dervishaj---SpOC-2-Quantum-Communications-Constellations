@@ -1,0 +1,10 @@
+{
+  "verified_hv": 0.622062072365475,
+  "baseline_hv": 0.6210291078790291,
+  "gain": 0.0010329644864458531,
+  "score_scale": 10000.0,
+  "accepted": 35,
+  "evaluated": 5416,
+  "invalid": 1412,
+  "errors": 0
+}
