@@ -1,0 +1,802 @@
+
+import argparse
+import json
+from pathlib import Path
+from types import MethodType
+
+import numpy as np
+
+from constellation import udp, combine_scores
+from experiments.map_elites_esa import REF, hv, select100, save_json
+from experiments.esa_numba_geometry import fast_build_graph
+from experiments.fcmaes_fast_fitness import fast_average_shortest_path
+
+
+def load_vectors(path):
+    document = json.loads(path.read_text(encoding="utf-8"))
+
+    payload = (
+        document[0]
+        if isinstance(document, list)
+        else document
+    )
+
+    vectors = payload["decisionVector"]
+
+    if len(vectors) != 100:
+        raise ValueError(
+            "Baseline must have exactly 100 decision vectors"
+        )
+
+    return vectors
+
+
+def main(argv=None):
+
+    parser = argparse.ArgumentParser(
+        description=__doc__
+    )
+
+    parser.add_argument(
+        "--base",
+        type=Path,
+        required=True
+    )
+
+    parser.add_argument(
+        "--out",
+        type=Path,
+        required=True
+    )
+
+    parser.add_argument(
+        "--evaluations",
+        type=int,
+        default=2000
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=3030
+    )
+
+    parser.add_argument(
+        "--no-fast",
+        action="store_true"
+    )
+
+    args = parser.parse_args(argv)
+
+    if not args.base.is_file():
+        parser.error(
+            "Baseline file does not exist"
+        )
+
+    if args.out.exists() and (
+        not args.out.is_dir()
+        or any(args.out.iterdir())
+    ):
+        parser.error(
+            "Output path exists and is not an empty directory"
+        )
+
+    if args.evaluations < 1:
+        parser.error(
+            "--evaluations must be >= 1"
+        )
+
+    rng = np.random.default_rng(args.seed)
+
+    lower, upper = [
+        np.asarray(a, dtype=float)
+        for a in udp.get_bounds()
+    ]
+
+    width = upper - lower
+
+    # ======================================================
+    # DECISION VECTOR REPAIR
+    # ======================================================
+
+    def repair(x):
+
+        z = np.asarray(
+            x,
+            dtype=float
+        )
+
+        if (
+            z.shape != (20,)
+            or not np.isfinite(z).all()
+        ):
+            raise ValueError(
+                "Invalid decision vector"
+            )
+
+        z = np.clip(
+            z,
+            lower,
+            upper
+        ).copy()
+
+        z[10:] = np.rint(
+            z[10:]
+        )
+
+        return z
+
+    # ======================================================
+    # ROVER CONSTRAINT
+    # ======================================================
+
+    def rover_ok(x):
+
+        ids = np.asarray(
+            x[16:20],
+            dtype=int
+        )
+
+        if len(set(ids.tolist())) != 4:
+            return False
+
+        c, _ = udp.get_rover_constraint(
+            udp.lambdas[ids],
+            udp.phis[ids]
+        )
+
+        return bool(
+            np.isfinite(c)
+            and c <= 0
+        )
+
+    # ======================================================
+    # ESA FITNESS
+    # ======================================================
+
+    def evaluate(x):
+
+        f = np.asarray(
+            udp.fitness(x.tolist()),
+            dtype=float
+        )
+
+        if (
+            f.shape != (4,)
+            or not np.isfinite(f).all()
+        ):
+            raise ValueError(
+                "ESA fitness returned invalid values"
+            )
+
+        if np.any(f[2:] > 0):
+            return None
+
+        return {
+            "x": x.tolist(),
+            "f": f.tolist()
+        }
+
+    def key(x):
+        return tuple(
+            np.round(x, 10)
+        )
+
+    # ======================================================
+    # BASELINE VERIFICATION
+    # ======================================================
+
+    print(
+        "BASELINE: verifying original ESA 100/100",
+        flush=True
+    )
+
+    initial = []
+
+    for raw in load_vectors(args.base):
+
+        x = repair(raw)
+
+        if not rover_ok(x):
+            raise ValueError(
+                "Baseline contains an invalid rover configuration"
+            )
+
+        row = evaluate(x)
+
+        if row is None:
+            raise ValueError(
+                "Baseline contains an infeasible ESA solution"
+            )
+
+        initial.append(row)
+
+    best = initial
+
+    baseline_hv = hv(best)
+
+    score = -float(
+        combine_scores(
+            [r["f"] for r in best]
+        )
+    )
+
+    scale = (
+        score / baseline_hv
+        if baseline_hv > 0
+        else float("nan")
+    )
+
+    if np.isclose(
+        scale,
+        10000.0,
+        rtol=1e-7
+    ):
+        scale = 10000.0
+
+    elif np.isclose(
+        scale,
+        1.0,
+        rtol=1e-7
+    ):
+        scale = 1.0
+
+    else:
+        raise RuntimeError(
+            f"Unexpected ESA score scaling: {scale}"
+        )
+
+    print(
+        f"BASELINE VERIFIED | "
+        f"HV={baseline_hv:.12f} | "
+        f"SCALE={scale:g}",
+        flush=True
+    )
+
+    current_hv = baseline_hv
+
+    seen = {
+        key(r["x"])
+        for r in best
+    }
+
+    # ======================================================
+    # ALNS ADAPTIVE OPERATORS
+    # ======================================================
+
+    
+    operators = (
+        "walker_reset",
+        "walker_local",
+        "orbit_local",
+        "orbit_large",
+        "rover_relocate",
+        "constellation_rebuild",
+        "walker_orbit_hybrid"
+    )
+
+    weights = np.array(
+        [0.8, 1.2, 3.0, 0.5, 0.5, 0.8, 1.5],
+        dtype=float
+    )
+
+
+    uses = np.zeros(
+        len(operators),
+        dtype=int
+    )
+
+    successes = np.zeros(
+        len(operators),
+        dtype=int
+    )
+
+    improvements = 0
+    evaluated = 0
+    valid = 0
+    invalid = 0
+    errors = 0
+    attempts = 0
+
+    archive = list(best)
+
+    # ======================================================
+    # DESTROY / REPAIR OPERATORS
+    # ======================================================
+
+    def propose(parent, name):
+
+        x = repair(parent)
+        z = x.copy()
+
+        # Operator 1: Global Walker reset
+        if name == "walker_reset":
+
+            js = rng.choice(
+                np.arange(10, 16),
+                size=int(rng.integers(1, 5)),
+                replace=False
+            )
+
+            for j in js:
+
+                z[j] = rng.integers(
+                    int(np.ceil(lower[j])),
+                    int(np.floor(upper[j])) + 1
+                )
+
+        # Operator 2: Local Walker search
+        
+        # Operator 2: V4 - Controlled Walker neighborhood
+        elif name == "walker_local":
+
+            side = int(rng.integers(2))
+
+            if side == 0:
+                walker_indices = np.array([10, 11, 12])
+            else:
+                walker_indices = np.array([13, 14, 15])
+
+            count = int(rng.integers(1, 3))
+
+            js = rng.choice(
+                walker_indices,
+                size=count,
+                replace=False
+            )
+
+            step = int(rng.choice([1, 2, 3, 4]))
+
+            for j in js:
+                direction = int(rng.choice([-1, 1]))
+
+                z[j] += direction * step
+
+                z[j] = np.clip(
+                    z[j],
+                    np.ceil(lower[j]),
+                    np.floor(upper[j])
+                )
+
+        # Operator 3: Adaptive orbital search — V3
+        elif name == "orbit_local":
+
+            # Zgjedhim 1 deri 4 parametra orbitalë
+            js = rng.choice(
+                10,
+                size=int(rng.integers(1, 5)),
+                replace=False
+            )
+
+            # Hapat bëhen më të vegjël gjatë kërkimit
+            progress = min(
+                evaluated / max(args.evaluations, 1),
+                1.0
+            )
+
+            sigma_choices = np.array([
+                0.001,
+                0.003,
+                0.007,
+                0.015,
+                0.030
+            ])
+
+            # Eksplorim në fillim, precizion në fund
+            sigma = float(
+                rng.choice(sigma_choices)
+                * (1.0 - 0.7 * progress)
+            )
+
+            z[js] += (
+                rng.normal(
+                    0,
+                    sigma,
+                    size=len(js)
+                )
+                * width[js]
+            )
+
+
+        # Operator 4: Large orbital changes
+        elif name == "orbit_large":
+
+            js = rng.choice(
+                10,
+                size=int(rng.integers(4, 11)),
+                replace=False
+            )
+
+            z[js] += (
+                rng.normal(
+                    0,
+                    0.12,
+                    size=len(js)
+                )
+                * width[js]
+            )
+
+        # Operator 5: Rover relocation
+        elif name == "rover_relocate":
+
+            js = rng.choice(
+                np.arange(16, 20),
+                size=int(rng.integers(1, 4)),
+                replace=False
+            )
+
+            for j in js:
+
+                z[j] = rng.integers(
+                    int(np.ceil(lower[j])),
+                    int(np.floor(upper[j])) + 1
+                )
+
+        # Operator 6: Rebuild one Walker constellation
+        elif name == "constellation_rebuild":
+            donor = archive[
+                int(rng.integers(len(archive)))
+            ]["x"]
+
+            side = int(
+                rng.integers(2)
+            )
+
+            z[
+                5 * side:5 * side + 5
+            ] = donor[
+                5 * side:5 * side + 5
+            ]
+
+            z[
+                10 + 3 * side:13 + 3 * side
+            ] = donor[
+                10 + 3 * side:13 + 3 * side
+            ]
+
+            js = np.arange(
+                5 * side,
+                5 * side + 5
+            )
+
+            z[js] += (
+                rng.normal(
+                    0,
+                    0.025,
+                    len(js)
+                )
+                * width[js]
+            )
+
+        # Operator 7: Walker + Orbit hybrid
+        elif name == "walker_orbit_hybrid":
+
+            side = int(rng.integers(2))
+
+            walker_js = np.arange(
+                10 + 3 * side,
+                13 + 3 * side
+            )
+
+            orbit_js = np.arange(
+                5 * side,
+                5 * side + 5
+            )
+
+            chosen_walker = rng.choice(
+                walker_js,
+                size=int(rng.integers(1, 3)),
+                replace=False
+            )
+
+            for j in chosen_walker:
+                z[j] += int(rng.choice([-2, -1, 1, 2]))
+                z[j] = np.clip(
+                    z[j],
+                    np.ceil(lower[j]),
+                    np.floor(upper[j])
+                )
+
+            chosen_orbit = rng.choice(
+                orbit_js,
+                size=int(rng.integers(1, 4)),
+                replace=False
+            )
+
+            sigma = float(rng.choice([
+                0.003, 0.008, 0.015, 0.030
+            ]))
+
+            z[chosen_orbit] += (
+                rng.normal(
+                    0,
+                    sigma,
+                    size=len(chosen_orbit)
+                )
+                * width[chosen_orbit]
+            )
+
+        return repair(z)
+
+    # ======================================================
+    # CHECKPOINT
+    # ======================================================
+
+    def save_state():
+
+        save_json(
+            args.out / "alns_checkpoint.json",
+            {
+                "algorithm": "adaptive_large_neighborhood_search",
+                "seed": args.seed,
+                "evaluations_budget": args.evaluations,
+                "evaluations_used": evaluated,
+                "attempts": attempts,
+                "baseline_hv": baseline_hv,
+                "current_hv": current_hv,
+                "improvements": improvements,
+                "valid": valid,
+                "invalid": invalid,
+                "errors": errors,
+                "operators": {
+                    name: {
+                        "weight": float(weights[i]),
+                        "uses": int(uses[i]),
+                        "improvements": int(successes[i])
+                    }
+                    for i, name in enumerate(operators)
+                },
+                "population": best
+            }
+        )
+
+    args.out.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    save_state()
+
+    # ======================================================
+    # FAST ENGINE
+    # ======================================================
+
+    old_graph = udp.build_graph
+    old_path = udp.average_shortest_path
+
+    try:
+
+        if not args.no_fast:
+
+            udp.build_graph = MethodType(
+                fast_build_graph,
+                udp
+            )
+
+            udp.average_shortest_path = MethodType(
+                fast_average_shortest_path,
+                udp
+            )
+
+            print(
+                "FAST ENGINE: ON",
+                flush=True
+            )
+
+        # ==================================================
+        # ALNS MAIN OPTIMIZATION LOOP
+        # ==================================================
+
+       
+        # ==========================================
+        # DIFFERENTIAL EVOLUTION + HYPERVOLUME
+        # ==========================================
+
+        population = [
+            np.asarray(r["x"], dtype=float).copy()
+            for r in best
+        ]
+
+        F = 0.65
+        CR = 0.85
+
+        print(
+            f"DE ON | population={len(population)} | "
+            f"F={F} | CR={CR}",
+            flush=True
+        )
+
+        while (
+            evaluated < args.evaluations
+            and attempts < args.evaluations * 15
+        ):
+            attempts += 1
+
+            target_idx = int(rng.integers(len(population)))
+            target = population[target_idx]
+
+            available = np.delete(
+                np.arange(len(population)),
+                target_idx
+            )
+
+            a, b, c = rng.choice(
+                available,
+                size=3,
+                replace=False
+            )
+
+            # DE/rand/1 mutation
+            mutant = (
+                population[a]
+                + F * (population[b] - population[c])
+            )
+
+            mutant = np.clip(mutant, lower, upper)
+
+            # Binomial crossover
+            mask = rng.random(20) < CR
+            mask[int(rng.integers(20))] = True
+
+            trial = np.where(mask, mutant, target)
+            trial = repair(trial)
+
+            k = key(trial)
+
+            if k in seen:
+                continue
+
+            seen.add(k)
+
+            if not rover_ok(trial):
+                invalid += 1
+                continue
+
+            evaluated += 1
+
+            try:
+                row = evaluate(trial)
+
+                if row is None:
+                    invalid += 1
+
+                else:
+                    valid += 1
+
+                    if np.all(np.asarray(row["f"][:2]) < REF):
+
+                        candidate = select100(best + [row])
+                        candidate_hv = hv(candidate)
+
+                        if candidate_hv > current_hv + 1e-12:
+                            best = candidate
+                            current_hv = candidate_hv
+                            improvements += 1
+
+                            population[target_idx] = trial
+
+                            archive.append(row)
+                            if len(archive) > 300:
+                                archive.pop(100)
+
+                            print(
+                                f"DE IMPROVED #{improvements} | "
+                                f"HV={current_hv:.12f}",
+                                flush=True
+                            )
+
+                            save_state()
+
+            except Exception as exc:
+                errors += 1
+                if errors <= 3:
+                    print(
+                        "DE Fitness error:",
+                        repr(exc),
+                        flush=True
+                    )
+
+            if evaluated % 200 == 0:
+                save_state()
+                print(
+                    f"DE Evaluated={evaluated}/"
+                    f"{args.evaluations} | "
+                    f"valid={valid} | "
+                    f"invalid={invalid} | "
+                    f"HV={current_hv:.12f}",
+                    flush=True
+                )
+
+
+    finally:
+        
+        udp.build_graph = old_graph
+        udp.average_shortest_path = old_path
+
+    # ======================================================
+    # FINAL ORIGINAL ESA VERIFICATION
+    # ======================================================
+
+    print(
+        "FINAL ORIGINAL ESA VERIFICATION 100/100",
+        flush=True
+    )
+
+    verified = []
+
+    for row in best:
+
+        x = repair(row["x"])
+
+        result = evaluate(x)
+
+        if result is None:
+            raise RuntimeError(
+                "Final submission failed original ESA verification"
+            )
+
+        verified.append(result)
+
+    final_hv = hv(verified)
+
+    if not np.isclose(
+        final_hv,
+        current_hv,
+        atol=1e-10,
+        rtol=0
+    ):
+        raise RuntimeError(
+            f"Fast/original evaluation mismatch: "
+            f"{current_hv} vs {final_hv}"
+        )
+
+    current_hv = final_hv
+
+    save_state()
+
+    # ======================================================
+    # SAVE IMPROVED SUBMISSION ONLY
+    # ======================================================
+
+    if final_hv > baseline_hv + 1e-12:
+
+        original_document = json.loads(
+            args.base.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        payload = (
+            original_document[0]
+            if isinstance(original_document, list)
+            else original_document
+        )
+
+        payload["decisionVector"] = [
+            row["x"]
+            for row in verified
+        ]
+
+        save_json(
+            args.out / "alns_improved_submission.json",
+            original_document
+        )
+
+        print(
+            f"NEW VERIFIED RECORD | "
+            f"HV={final_hv:.12f}",
+            flush=True
+        )
+
+    else:
+
+        print(
+            f"NO IMPROVEMENT | "
+            f"baseline preserved | "
+            f"HV={final_hv:.12f}",
+            flush=True
+        )
+
+
+if __name__ == "__main__":
+    main()
